@@ -72,3 +72,8 @@ deployment:
 mlflow:
   experiment_name: "churn_prediction"
   tracking_uri: "mlruns"
+
+explainability:
+  enabled: true
+  sample_size: 500
+  max_display_features: 10

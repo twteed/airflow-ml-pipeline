@@ -13,6 +13,7 @@ setup(
         "pandas>=2.2",
         "numpy>=1.26",
         "xgboost>=2.1",
+        "shap>=0.45",
         "mlflow>=2.15",
         "joblib>=1.4",
         "pyyaml>=6.0",

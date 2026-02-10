@@ -20,6 +20,7 @@ def promote_model(
     metrics: dict,
     feature_names: list[str],
     config: dict,
+    feature_importance: list[dict] | None = None,
 ) -> str:
     """Promote the champion model to the deployment directory.
 
@@ -59,6 +60,9 @@ def promote_model(
         "model_class": type(model).__name__,
         "model_params": model.get_params(),
     }
+
+    if feature_importance is not None:
+        metadata["feature_importance"] = feature_importance
 
     with open(champion_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2, default=str)
@@ -142,5 +146,33 @@ def create_flask_app(config: dict):
     @app.route("/model/info", methods=["GET"])
     def model_info():
         return jsonify(metadata)
+
+    @app.route("/model/explain", methods=["POST"])
+    def explain_endpoint():
+        """Explain a prediction with per-feature SHAP contributions."""
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No input data provided"}), 400
+
+        try:
+            from ml_pipeline.explainability import explain_single_prediction
+
+            df = pd.DataFrame([data] if isinstance(data, dict) else data)
+            feature_names = metadata.get("feature_names", [])
+            explanation = explain_single_prediction(
+                model, preprocessor, df, feature_names, config,
+            )
+            return jsonify(explanation)
+        except Exception as e:
+            logger.exception("Explanation failed")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/model/feature-importance", methods=["GET"])
+    def feature_importance_endpoint():
+        """Return global feature importance from the deployed champion."""
+        importance = metadata.get("feature_importance")
+        if importance is None:
+            return jsonify({"error": "No feature importance data available"}), 404
+        return jsonify({"feature_importance": importance})
 
     return app
