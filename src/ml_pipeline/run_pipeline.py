@@ -10,6 +10,7 @@ from ml_pipeline.config import load_config
 from ml_pipeline.data_ingestion import ingest_data
 from ml_pipeline.deployment import promote_model
 from ml_pipeline.evaluation import evaluate_all_models, save_evaluation_report, select_champion
+from ml_pipeline.explainability import compute_shap_values, generate_feature_importance, save_explainability_report
 from ml_pipeline.feature_engineering import build_features, save_preprocessor
 from ml_pipeline.training import train_all_models
 
@@ -73,6 +74,25 @@ def run_pipeline(config_path: str | None = None) -> dict:
     )
     save_evaluation_report(evaluation_results, champion_name, report_path)
 
+    # Step 4.5 — Explainability
+    explain_cfg = config.get("explainability", {})
+    feature_importance = None
+    if explain_cfg.get("enabled", False):
+        logger.info("Step 4.5: Model Explainability (SHAP)")
+        champion_model = trained_models[champion_name]["model"]
+        shap_result = compute_shap_values(champion_model, X_test, feature_names, config)
+        max_features = explain_cfg.get("max_display_features", 10)
+        feature_importance = generate_feature_importance(
+            shap_result["shap_values"], feature_names, max_features=max_features,
+        )
+        explain_path = str(
+            Path(config["deployment"]["champion_model_path"]).parent / "explainability_report.json"
+        )
+        save_explainability_report(shap_result, feature_importance, explain_path)
+        logger.info("Top features: %s", [f["feature"] for f in feature_importance[:5]])
+    else:
+        logger.info("Explainability disabled — skipping SHAP computation")
+
     # Step 5 — Deployment
     logger.info("Step 5/5: Model Deployment")
     champion_model = trained_models[champion_name]["model"]
@@ -83,6 +103,7 @@ def run_pipeline(config_path: str | None = None) -> dict:
         metrics=champion_result["metrics"],
         feature_names=feature_names,
         config=config,
+        feature_importance=feature_importance,
     )
 
     logger.info("=" * 60)

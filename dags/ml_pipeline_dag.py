@@ -141,6 +141,54 @@ def _evaluate_models(**kwargs):
     return champion_name
 
 
+def _explain_model(**kwargs):
+    """Compute SHAP values and feature importance for the champion model."""
+    import joblib
+    import numpy as np
+    import yaml
+
+    config = kwargs["ti"].xcom_pull(task_ids="load_config", key="config")
+    explain_cfg = config.get("explainability", {})
+
+    if not explain_cfg.get("enabled", False):
+        logger.info("Explainability disabled — skipping")
+        kwargs["ti"].xcom_push(key="feature_importance", value=None)
+        return None
+
+    artifacts_dir = kwargs["ti"].xcom_pull(task_ids="build_features", key="artifacts_dir")
+    champion_name = kwargs["ti"].xcom_pull(task_ids="evaluate_models", key="champion_name")
+    feature_names = kwargs["ti"].xcom_pull(task_ids="build_features", key="feature_names")
+
+    if not champion_name:
+        logger.info("No champion — skipping explainability")
+        kwargs["ti"].xcom_push(key="feature_importance", value=None)
+        return None
+
+    from ml_pipeline.explainability import (
+        compute_shap_values,
+        generate_feature_importance,
+        save_explainability_report,
+    )
+
+    trained_models = joblib.load(f"{artifacts_dir}/trained_models.joblib")
+    X_test = np.load(f"{artifacts_dir}/X_test.npy")
+    champion_model = trained_models[champion_name]["model"]
+
+    shap_result = compute_shap_values(champion_model, X_test, feature_names, config)
+    max_features = explain_cfg.get("max_display_features", 10)
+    feature_importance = generate_feature_importance(
+        shap_result["shap_values"], feature_names, max_features=max_features,
+    )
+    save_explainability_report(
+        shap_result, feature_importance, f"{artifacts_dir}/explainability_report.json",
+    )
+
+    kwargs["ti"].xcom_push(key="feature_importance", value=feature_importance)
+    logger.info("SHAP explainability complete — top features: %s",
+                [f["feature"] for f in feature_importance[:5]])
+    return feature_importance
+
+
 def _check_champion(**kwargs):
     """Branch: deploy if we have a champion, otherwise notify."""
     champion_name = kwargs["ti"].xcom_pull(task_ids="evaluate_models", key="champion_name")
@@ -162,6 +210,7 @@ def _deploy_model(**kwargs):
     trained_models = joblib.load(f"{artifacts_dir}/trained_models.joblib")
     preprocessor = joblib.load(f"{artifacts_dir}/preprocessor.joblib")
     champion_model = trained_models[champion_name]["model"]
+    feature_importance = kwargs["ti"].xcom_pull(task_ids="explain_model", key="feature_importance")
 
     deploy_path = promote_model(
         model=champion_model,
@@ -170,6 +219,7 @@ def _deploy_model(**kwargs):
         metrics=champion_metrics,
         feature_names=feature_names,
         config=config,
+        feature_importance=feature_importance,
     )
 
     logger.info("Model deployed to %s", deploy_path)
@@ -231,6 +281,11 @@ with DAG(
         python_callable=_notify_no_champion,
     )
 
+    explain_model = PythonOperator(
+        task_id="explain_model",
+        python_callable=_explain_model,
+    )
+
     # DAG dependency chain
     (
         load_config
@@ -238,6 +293,7 @@ with DAG(
         >> build_features
         >> train_models
         >> evaluate_models
+        >> explain_model
         >> check_champion
         >> [deploy_model, notify_no_champion]
     )
